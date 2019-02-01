@@ -38,6 +38,8 @@ enum {
     NAME_COL,
     LENGTH_COL,
     DATA_COL,
+    PREV_COL,
+    NEXT_COL,
     COL_NUMBERS
 };
 
@@ -192,6 +194,22 @@ parole_media_list_connect_shuffle_action            (ParoleMediaList *list,
 
 void parole_media_list_add_dvd (ParoleMediaList *list, gchar *dvd_name);
 
+void parole_media_list_link_history                 (ParoleMediaList *list,
+                                                     GtkTreeRowReference *prev_row,
+                                                     GtkTreeRowReference *next_row);
+
+void parole_media_list_remove_history               (ParoleMediaList *list,
+                                                     GtkTreeRowReference *row);
+
+GtkTreeRowReference
+*parole_media_list_get_next_row_by_history          (ParoleMediaList *list,
+                                                     GtkTreeRowReference *row);
+
+GtkTreeRowReference
+*parole_media_list_get_prev_row_by_history          (ParoleMediaList *list,
+                                                     GtkTreeRowReference *row);
+
+void pml_print_history_links (ParoleMediaList *list); // Test stuff to remove
 
 G_END_DECLS
 

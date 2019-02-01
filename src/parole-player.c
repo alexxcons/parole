@@ -1044,10 +1044,12 @@ parole_player_select_custom_subtitle(GtkMenuItem *widget, gpointer data) {
 }
 
 static void
-parole_player_media_activated_cb(ParoleMediaList *list, GtkTreeRowReference *row, ParolePlayer *player) {
+parole_player_play_media(ParoleMediaList *list, GtkTreeRowReference *row, ParolePlayer *player) {
     ParoleFile *file;
     GtkTreeIter iter;
     GtkTreeModel *model;
+
+    pml_print_history_links(player->priv->list); // For testing, will be removed
 
     model = gtk_tree_row_reference_get_model(row);
 
@@ -1102,6 +1104,25 @@ parole_player_media_activated_cb(ParoleMediaList *list, GtkTreeRowReference *row
             g_object_unref(file);
         }
     }
+}
+
+static void
+parole_player_media_activated_cb(ParoleMediaList *list, GtkTreeRowReference *row, ParolePlayer *player) {
+    if ( gtk_tree_row_reference_valid(row) && gtk_tree_row_reference_valid(player->priv->row) ) {
+        GtkTreePath *prev_path = gtk_tree_row_reference_get_path(row);
+        GtkTreePath *next_path = gtk_tree_row_reference_get_path(player->priv->row);
+
+        if ( gtk_tree_path_compare(prev_path, next_path) ) {
+            /* Move the chosen row to the front of the history chain before playing it */
+            parole_media_list_remove_history(player->priv->list, row);
+            parole_media_list_link_history(player->priv->list, player->priv->row, row);
+        }
+
+        gtk_tree_path_free(prev_path);
+        gtk_tree_path_free(next_path);
+    }
+
+    parole_player_play_media(list, row, player);
 }
 
 static void
@@ -1469,7 +1490,7 @@ parole_player_play_selected_row(ParolePlayer *player) {
         row = parole_media_list_get_first_row(player->priv->list);
 
     if ( row )
-        parole_player_media_activated_cb(player->priv->list, row, player);
+        parole_player_play_media(player->priv->list, row, player);
 }
 
 static void
@@ -1490,13 +1511,22 @@ parole_player_play_next(ParolePlayer *player, gboolean allow_shuffle) {
     if ( player->priv->row ) {
         parole_media_list_set_row_playback_state(player->priv->list, player->priv->row, PAROLE_MEDIA_STATE_NONE);
 
-        if ( shuffle && allow_shuffle )
-            row = parole_media_list_get_row_random(player->priv->list);
-        else
+        if ( shuffle && allow_shuffle ) {
+            /* Before actually shuffling, see if there is history to traverse forward through */
+            row = parole_media_list_get_next_row_by_history(player->priv->list, player->priv->row);
+            if ( !row ) {
+                row = parole_media_list_get_row_random(player->priv->list);
+                /* Break any history links to prevent forming loops */
+                parole_media_list_remove_history(player->priv->list, row);
+            }
+        } else {
             row = parole_media_list_get_next_row(player->priv->list, player->priv->row, repeat);
+            parole_media_list_remove_history(player->priv->list, row);
+        }
 
         if ( row ) {
-            parole_player_media_activated_cb(player->priv->list, row, player);
+            parole_media_list_link_history(player->priv->list, player->priv->row, row);
+            parole_player_play_media(player->priv->list, row, player);
             return;
         } else {
             TRACE("No remaining media in the list");
@@ -1510,20 +1540,34 @@ parole_player_play_next(ParolePlayer *player, gboolean allow_shuffle) {
 
 static void
 parole_player_play_prev(ParolePlayer *player) {
-    GtkTreeRowReference *row;
+    gboolean shuffle;
+    GtkTreeRowReference *row = NULL;
 
     if ( player->priv->current_media_type == PAROLE_MEDIA_TYPE_DVD ) {
         parole_gst_prev_dvd_chapter(PAROLE_GST(player->priv->gst));
         return;
     }
 
+    g_object_get(G_OBJECT(player->priv->conf),
+                  "shuffle", &shuffle,
+                  NULL);
+
     if ( player->priv->row ) {
         parole_media_list_set_row_playback_state(player->priv->list, player->priv->row, PAROLE_MEDIA_STATE_NONE);
 
-        row = parole_media_list_get_prev_row(player->priv->list, player->priv->row);
+        if ( shuffle ) {
+            row = parole_media_list_get_prev_row_by_history(player->priv->list, player->priv->row);
+        } else {
+            row = parole_media_list_get_prev_row(player->priv->list, player->priv->row);
+            /* If shuffle is off, pressing Previous Track will be treated in history as navigating to a new track,
+             * rather than traversing backwards through history.
+             */
+            parole_media_list_remove_history(player->priv->list, row);
+            parole_media_list_link_history(player->priv->list, player->priv->row, row);
+        }
 
         if ( row ) {
-            parole_player_media_activated_cb(player->priv->list, row, player);
+            parole_player_play_media(player->priv->list, row, player);
             return;
         } else {
             TRACE("No remaining media in the list");

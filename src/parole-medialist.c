@@ -304,6 +304,8 @@ parole_media_list_add(ParoleMediaList *list, ParoleFile *file, gboolean disc, gb
                        DATA_COL, file,
                        LENGTH_COL, parole_taglibc_get_media_length(file),
                        STATE_COL, PAROLE_MEDIA_STATE_NONE,
+                       PREV_COL, NULL,
+                       NEXT_COL, NULL,
                        -1);
 
     if ( emit || select_row ) {
@@ -935,6 +937,8 @@ parole_media_list_remove_clicked_cb(GtkButton *button, ParoleMediaList *list) {
         row = g_list_nth_data(row_list, i);
         path = gtk_tree_row_reference_get_path(row);
 
+        parole_media_list_remove_history(list, row);
+
         if (G_LIKELY(gtk_tree_model_get_iter(model, &iter, path) == TRUE)) {
             gtk_list_store_remove(GTK_LIST_STORE(model),
                        &iter);
@@ -1406,8 +1410,8 @@ parole_media_list_setup_view(ParoleMediaList *list) {
     GtkListStore *list_store, *disc_list_store;
     GtkCellRenderer *renderer, *disc_renderer;
 
-    list_store = gtk_list_store_new(COL_NUMBERS, G_TYPE_INT, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_OBJECT);
-    disc_list_store = gtk_list_store_new(COL_NUMBERS, G_TYPE_INT, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_OBJECT);
+    list_store = gtk_list_store_new(COL_NUMBERS, G_TYPE_INT, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_OBJECT, G_TYPE_POINTER, G_TYPE_POINTER);
+    disc_list_store = gtk_list_store_new(COL_NUMBERS, G_TYPE_INT, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_OBJECT, G_TYPE_POINTER, G_TYPE_POINTER);
 
     gtk_tree_view_set_model(GTK_TREE_VIEW(list->priv->view), GTK_TREE_MODEL(list_store));
     gtk_tree_view_set_model(GTK_TREE_VIEW(list->priv->disc_view), GTK_TREE_MODEL(disc_list_store));
@@ -2063,4 +2067,164 @@ void parole_media_list_connect_shuffle_action(ParoleMediaList *list, GSimpleActi
     g_signal_connect(G_OBJECT(simple), "notify::state", G_CALLBACK(shuffle_action_state_changed), NULL);
     /* Connect changed event to modify action */
     g_signal_connect(G_OBJECT(list->priv->shuffle_button), "clicked", G_CALLBACK(shuffle_toggled), simple);
+}
+
+/*
+ * Link two tracks together in the history chain
+ */
+void parole_media_list_link_history(ParoleMediaList *list, GtkTreeRowReference *prev_row, GtkTreeRowReference *next_row) {
+    GtkTreeIter iter;
+    GtkTreePath *prev_path;
+    GtkTreePath *next_path;
+
+    if ( gtk_tree_row_reference_valid(prev_row) && gtk_tree_row_reference_valid(next_row) ) {
+        prev_path = gtk_tree_row_reference_get_path(prev_row);
+        next_path = gtk_tree_row_reference_get_path(next_row);
+
+        if ( ! gtk_tree_path_compare(prev_path, next_path) ) {
+            /* Make sure we're not forming an infinite history loop */
+            TRACE("Trying to link row to itself in history");
+            gtk_tree_path_free(prev_path);
+            gtk_tree_path_free(next_path);
+            return;
+        }
+
+        if ( gtk_tree_model_get_iter(GTK_TREE_MODEL(list->priv->store), &iter, prev_path) ) {
+            gtk_list_store_set(list->priv->store, &iter,
+                NEXT_COL, gtk_tree_row_reference_copy(next_row),
+                -1);
+        }
+
+        if ( gtk_tree_model_get_iter(GTK_TREE_MODEL(list->priv->store), &iter, next_path)) {
+            gtk_list_store_set(list->priv->store, &iter,
+                PREV_COL, gtk_tree_row_reference_copy(prev_row),
+                -1);
+        }
+
+        gtk_tree_path_free(prev_path);
+        gtk_tree_path_free(next_path);
+    }
+}
+
+/* Isolate a given row from its place in the history chain and link together its neighbors */
+void parole_media_list_remove_history(ParoleMediaList *list, GtkTreeRowReference *row) {
+    GtkTreeRowReference *prev = NULL;
+    GtkTreeRowReference *next = NULL;
+    GtkTreeIter iter;
+    GtkTreePath *path;
+
+    if ( gtk_tree_row_reference_valid(row) ) {
+        path = gtk_tree_row_reference_get_path(row);
+
+        if ( gtk_tree_model_get_iter(GTK_TREE_MODEL(list->priv->store), &iter, path) ) {
+            gtk_tree_model_get(GTK_TREE_MODEL(list->priv->store), &iter, PREV_COL, &prev, -1);
+            gtk_tree_model_get(GTK_TREE_MODEL(list->priv->store), &iter, NEXT_COL, &next, -1);
+
+            parole_media_list_link_history(list, prev, next);
+
+            gtk_list_store_set(list->priv->store, &iter,
+                NEXT_COL, NULL,
+                PREV_COL, NULL,
+                -1);
+        }
+
+        gtk_tree_row_reference_free(prev);
+        gtk_tree_row_reference_free(next);
+        gtk_tree_path_free(path);
+    }
+}
+
+GtkTreeRowReference *parole_media_list_get_next_row_by_history(ParoleMediaList *list, GtkTreeRowReference *row) {
+    GtkTreeRowReference *next = NULL;
+    GtkTreePath *path;
+    GtkTreeIter iter;
+
+    if ( !gtk_tree_row_reference_valid (row) )
+        return NULL;
+
+    path = gtk_tree_row_reference_get_path(row);
+
+    if ( gtk_tree_model_get_iter(GTK_TREE_MODEL(list->priv->store), &iter, path) )
+        gtk_tree_model_get(GTK_TREE_MODEL(list->priv->store), &iter, NEXT_COL, &next, -1);
+
+    gtk_tree_path_free(path);
+
+    return next;
+}
+
+GtkTreeRowReference *parole_media_list_get_prev_row_by_history(ParoleMediaList *list, GtkTreeRowReference *row) {
+    GtkTreeRowReference *next = NULL;
+    GtkTreePath *path;
+    GtkTreeIter iter;
+
+    if ( !gtk_tree_row_reference_valid(row) )
+        return NULL;
+
+    path = gtk_tree_row_reference_get_path(row);
+
+    if ( gtk_tree_model_get_iter(GTK_TREE_MODEL(list->priv->store), &iter, path) )
+        gtk_tree_model_get(GTK_TREE_MODEL(list->priv->store), &iter, PREV_COL, &next, -1);
+
+    gtk_tree_path_free(path);
+
+    return next;
+}
+
+void pml_print_history_links(ParoleMediaList *list) {
+    //// This is just just for testing, and will be removed
+    GtkTreeRowReference *row;
+    GtkTreePath *path;
+    GtkTreePath *path_temp;
+    GtkTreeIter iter;
+    gchar *name;
+
+    if (gtk_notebook_get_current_page(GTK_NOTEBOOK(list->priv->playlist_notebook)) != 0) {
+        return;
+    }
+
+    g_print("\n");
+
+    for (gint i=0; i < parole_media_list_get_playlist_count(list); i+=1) {
+        path = gtk_tree_path_new_from_indices(i, -1);
+
+        if ( gtk_tree_model_get_iter(GTK_TREE_MODEL(list->priv->store), &iter, path) )
+            gtk_tree_model_get(GTK_TREE_MODEL(list->priv->store), &iter, PREV_COL, &row, -1);
+
+        if ( gtk_tree_row_reference_valid(row) ) {
+            path_temp = gtk_tree_row_reference_get_path(row);
+            name = gtk_tree_path_to_string(path_temp);
+        } else {
+            name = "*";
+        }
+
+        g_print(":: %s : ",name);
+
+        if ( gtk_tree_row_reference_valid(row) ) {
+            gtk_tree_path_free(path_temp);
+            g_free(name);
+        }
+
+        name = gtk_tree_path_to_string(path);
+        g_print("%s : ",name);
+        g_free(name);
+
+        if ( gtk_tree_model_get_iter(GTK_TREE_MODEL(list->priv->store), &iter, path) )
+            gtk_tree_model_get(GTK_TREE_MODEL(list->priv->store), &iter, NEXT_COL, &row, -1);
+
+        if ( gtk_tree_row_reference_valid(row) ) {
+            path_temp = gtk_tree_row_reference_get_path(row);
+            name = gtk_tree_path_to_string(path_temp);
+        } else {
+            name = "*";
+        }
+
+        g_print("%s ::\n",name);
+
+        if ( gtk_tree_row_reference_valid(row) ) {
+            gtk_tree_path_free(path_temp);
+            g_free(name);
+        }
+
+        gtk_tree_path_free(path);
+}
 }
